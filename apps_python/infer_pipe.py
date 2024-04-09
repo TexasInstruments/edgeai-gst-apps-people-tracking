@@ -56,8 +56,8 @@ class InferPipe:
 
         self.gst_post_out = gst_pipe.get_sink(
             sub_flow.gst_post_sink_name,
-            sub_flow.sensor_width,
-            sub_flow.sensor_height,
+            sub_flow.width,
+            sub_flow.height,
             sub_flow.input.fps,
         )
         self.param = sub_flow.model
