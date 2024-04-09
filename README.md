@@ -78,7 +78,7 @@ The application shows two main sections on the screen: live feed of the input vi
   * Add a new dashboard class in dashboard.py to generate graphical representation of data.
   * Add a new ObjectTime and ObjectTimeCount in object_time_count.py to count total time and still time for each tracket object.
   * add a new calss HeatMap in heat_map.py to generate heatmap based on history of all detected objects and overlay on input frame.
-  * 
+  * add a new class LitePlot in lite_plot.py to draw various plots which are desgined to take short times.
 * **apps_cpp**:    Not changed in this version
 * **configs**:     Create two new config files:
   * /configs/people_tracking.yaml to run the demo using a CSI or a USB camera feed as input. 
