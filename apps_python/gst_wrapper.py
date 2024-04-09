@@ -751,6 +751,12 @@ def get_input_elements(input):
         if input.loop == True:
             property["loop"] = True
 
+        #Set caps only in case of hardware decoder
+        if ((input.format == "h264" and gst_element_map["h264dec"]["element"] == "v4l2h264dec") or
+            (input.format == "h265" and gst_element_map["h264dec"]["element"] == "v4l2h264dec")):
+            caps_string = "video/x-" + input.format
+            caps_string += ",width=%d,height=%d,framerate=%s" % (input.width,input.height,input.fps)
+            property["caps"] = Gst.caps_from_string(caps_string)
         element = make_element("multifilesrc", property=property)
         input_element_list += element
         for i in video_dec[input.format]:
@@ -1178,9 +1184,12 @@ def get_post_proc_elements(flow):
     element = make_element("appsrc", property=property)
     post_proc_elements += element
 
+    # Qutaiba
     caps = "video/x-raw, format=NV12, width=%d, height=%d" % (
-        flow.sensor_width,
-        flow.sensor_height,
+        # flow.sensor_width,
+        # flow.sensor_height,
+        flow.width,
+        flow.height,
     )
     element = make_element(gst_element_map["dlcolorconvert"], caps=caps)
     post_proc_elements += element
