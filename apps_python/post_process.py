@@ -32,6 +32,14 @@ import cv2
 import numpy as np
 import copy
 import debug
+import norfair
+from norfair import Detection, Tracker
+from typing import List , Optional, Union
+
+from path_draw import PathDraw
+from heat_map import HeatMap
+from object_time_count import ObjectTimeCount
+from dashboard import Dashboard
 
 np.set_printoptions(threshold=np.inf, linewidth=np.inf)
 
@@ -55,14 +63,14 @@ def create_title_frame(title, width, height):
 
 
 def overlay_model_name(frame, model_name, start_x, start_y, width, height):
-    row_size = 40 * width // 1280
+    row_size = 20 * width // 1280
     font_size = width / 1280
     cv2.putText(
         frame,
         "Model : " + model_name,
         (start_x + 5, start_y - row_size // 4),
         cv2.FONT_HERSHEY_SIMPLEX,
-        font_size,
+        1,
         (255, 255, 255),
         2,
     )
@@ -89,11 +97,10 @@ class PostProcess:
         if flow.model.task_type == "classification":
             return PostProcessClassification(flow)
         elif flow.model.task_type == "detection":
-            return PostProcessDetection(flow)
+            # return PostProcessDetection(flow)
+            return PostProcessTracking(flow)
         elif flow.model.task_type == "segmentation":
             return PostProcessSegmentation(flow)
-        elif flow.model.task_type == "keypoint_detection":
-            return PostProcessKeypointDetection(flow)
 
 
 class PostProcessClassification(PostProcess):
@@ -139,9 +146,13 @@ class PostProcessClassification(PostProcess):
 
         bg_top_left = (0, (2 * row_size) - text_size[1] - 5)
         bg_bottom_right = (text_size[0] + 10, (2 * row_size) + 3 + 5)
-        font_coord = (5, 2 * row_size)
+        font_coord = (5 , 2 * row_size)
 
-        cv2.rectangle(frame, bg_top_left, bg_bottom_right, (5, 11, 120), -1)
+        cv2.rectangle(frame,
+                      bg_top_left,
+                      bg_bottom_right,
+                      (5, 11, 120),
+                      -1)
 
         cv2.putText(
             frame,
@@ -154,17 +165,7 @@ class PostProcessClassification(PostProcess):
         )
         row = 3
         for idx in topN_classes:
-            idx = idx + self.model.label_offset
-            if idx in self.model.dataset_info:
-                class_name = self.model.dataset_info[idx].name
-                if not class_name:
-                    class_name = "UNDEFINED"
-                if self.model.dataset_info[idx].supercategory:
-                    class_name = (
-                        self.model.dataset_info[idx].supercategory + "/" + class_name
-                    )
-            else:
-                class_name = "UNDEFINED"
+            class_name = self.model.classnames.get(idx + self.model.label_offset)
 
             text_size, _ = cv2.getTextSize(class_name, font, font_size, 2)
 
@@ -172,7 +173,11 @@ class PostProcessClassification(PostProcess):
             bg_bottom_right = (text_size[0] + 10, (row_size * row) + 3 + 5)
             font_coord = (5, row_size * row)
 
-            cv2.rectangle(frame, bg_top_left, bg_bottom_right, (5, 11, 120), -1)
+            cv2.rectangle(frame,
+                         bg_top_left,
+                         bg_bottom_right,
+                         (5, 11, 120),
+                         -1)
             cv2.putText(
                 frame,
                 class_name,
@@ -233,23 +238,9 @@ class PostProcessDetection(PostProcess):
         for b in bbox:
             if b[5] > self.model.viz_threshold:
                 if type(self.model.label_offset) == dict:
-                    class_name_idx = self.model.label_offset[int(b[4])]
+                    class_name = self.model.classnames[self.model.label_offset[int(b[4])]]
                 else:
-                    class_name_idx = self.model.label_offset + int(b[4])
-
-                if class_name_idx in self.model.dataset_info:
-                    class_name = self.model.dataset_info[class_name_idx].name
-                    if not class_name:
-                        class_name = "UNDEFINED"
-                    if self.model.dataset_info[class_name_idx].supercategory:
-                        class_name = (
-                            self.model.dataset_info[class_name_idx].supercategory
-                            + "/"
-                            + class_name
-                        )
-                else:
-                    class_name = "UNDEFINED"
-
+                    class_name = self.model.classnames[self.model.label_offset + int(b[4])]
                 img = self.overlay_bounding_box(img, b, class_name)
 
         if self.debug:
@@ -363,101 +354,113 @@ class PostProcessSegmentation(PostProcess):
 
         return cv2.merge((r_map, g_map, b_map))
 
-class PostProcessKeypointDetection(PostProcess):
-
+class PostProcessTracking(PostProcess):
     def __init__(self, flow):
         super().__init__(flow)
 
+        DISTANCE_THRESHOLD_BBOX: float = 1
+        DISTANCE_FUNCTION = "iou"
+        INITIALIZATION_DELAY = 4
+        HIT_COUNTER_MAX = 5
+
+        PATH_CIRCLE_THICKNESS = 5
+        PATH_ATTENUATION = 0.1
+
+        PATH_HISTORY_SIZE = 10
+
+        # initilize tracker 
+        self.tracker = Tracker(initialization_delay=INITIALIZATION_DELAY,
+        distance_function=DISTANCE_FUNCTION,
+        distance_threshold=DISTANCE_THRESHOLD_BBOX,
+        hit_counter_max=HIT_COUNTER_MAX
+        )
+
+        self.pathd = PathDraw(history_size=PATH_HISTORY_SIZE)
+
+        frame_shape = (self.flow.sensor_height, self.flow.sensor_width)
+        self.heatMap = HeatMap(frame_shape,30)
+
+        self.timeCount = ObjectTimeCount(5)
+
+        self.dashBoard = Dashboard(5, self.heatMap, self.timeCount)
+
     def __call__(self, img, results):
         """
-        Post process function for keypoint detection
+        Post process function for people tracking
         Args:
             img: Input frame
             results: output of inference
         """
-        output = np.squeeze(results[0])
+        for i, r in enumerate(results):
+            r = np.squeeze(r)
+            if r.ndim == 1:
+                r = np.expand_dims(r, 1)
+            results[i] = r
 
-        scale_x = img.shape[1] / self.model.resize[0]
-        scale_y = img.shape[0] / self.model.resize[1]
+        if self.model.shuffle_indices:
+            results_reordered = []
+            for i in self.model.shuffle_indices:
+                results_reordered.append(results[i])
+            results = results_reordered
 
-        det_bboxes, det_scores, det_labels, kpts = (
-            np.array(output[:, 0:4]),
-            np.array(output[:, 4]),
-            np.array(output[:, 5]),
-            np.array(output[:, 6:]),
-        )
-        for idx in range(len(det_bboxes)):
-            det_bbox = det_bboxes[idx]
-            kpt = kpts[idx]
-            if det_scores[idx] > self.model.viz_threshold:
-                det_bbox[..., (0, 2)] *= scale_x
-                det_bbox[..., (1, 3)] *= scale_y
+        if results[-1].ndim < 2:
+            results = results[:-1]
 
-                # Drawing bounding box
-                img = cv2.rectangle(
-                    img,
-                    (int(det_bbox[0]), int(det_bbox[1])),
-                    (int(det_bbox[2]), int(det_bbox[3])),
-                    (0, 255, 0),
-                    2,
+        bbox = np.concatenate(results, axis=-1)
+
+        if self.model.formatter:
+            if self.model.ignore_index == None:
+                bbox_copy = copy.deepcopy(bbox)
+            else:
+                bbox_copy = copy.deepcopy(np.delete(bbox, self.model.ignore_index, 1))
+            bbox[..., self.model.formatter["dst_indices"]] = bbox_copy[
+                ..., self.model.formatter["src_indices"]
+            ]
+
+        ####################################################################
+        # OBJECT TRACKING 
+        ####################################################################
+        if not self.model.normalized_detections:
+            bbox[..., (0, 2)] /= self.model.resize[0]
+            bbox[..., (1, 3)] /= self.model.resize[1]
+        
+        bbox[..., (0, 2)] *= img.shape[1]
+        bbox[..., (1, 3)] *= img.shape[0]
+
+        
+        # change the detected object to a format understood by the tracker
+        detections = self.yolo_detections_to_norfair_detections(bbox)
+
+        tracked_objects = self.tracker.update(detections=detections)
+
+        self.timeCount.update(tracked_objects)
+        
+        self.heatMap.update(detections)
+
+        db = self.dashBoard.update_dashboard(img)
+
+        img = self.pathd.draw(img, tracked_objects)
+        self.timeCount.draw_time(img, text_size = 1.5, text_thickness = 3)
+
+        return self.dashBoard.add_dashboard(img)
+    
+    def yolo_detections_to_norfair_detections(self, results_bbox) -> List[Detection]:
+        """convert detections_as_xywh to norfair detections"""
+        norfair_detections: List[Detection] = []
+        for b in results_bbox:
+            if b[5] > self.model.viz_threshold and int(b[4]) == 0:
+                bbox = np.array(
+                    [
+                        [b[0].item(), b[1].item()],
+                        [b[2].item(), b[3].item()],
+                    ]
                 )
-
-                dataset_idx = int(det_labels[idx])
-                # Put Label
-                if type(self.model.label_offset) == dict:
-                    dataset_idx = self.model.label_offset[dataset_idx]
-                else:
-                    dataset_idx = self.model.label_offset + dataset_idx
-
-                if dataset_idx in self.model.dataset_info:
-                    class_name = self.model.dataset_info[dataset_idx].name
-                    if not class_name:
-                        class_name = "UNDEFINED"
-                    if self.model.dataset_info[dataset_idx].supercategory:
-                        class_name = (
-                            self.model.dataset_info[dataset_idx].supercategory
-                            + "/"
-                            + class_name
-                        )
-                    skeleton = self.model.dataset_info[dataset_idx].skeleton
-                    if not skeleton:
-                        skeleton = []
-
-                else:
-                    class_name = "UNDEFINED"
-                    skeleton = []
-
-                cv2.putText(
-                    img,
-                    class_name,
-                    (int(det_bbox[0]), int(det_bbox[1]) + 15),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    (255, 0, 0),
-                    2,
+                scores = np.array(
+                    [b[5], b[5]]
                 )
-
-                # Drawing keypoints
-                num_kpts = len(kpt) // 3
-                for kidx in range(num_kpts):
-                    kx, ky, conf = kpt[3 * kidx], kpt[3 * kidx + 1], kpt[3 * kidx + 2]
-                    kx = int(kx * scale_x)
-                    ky = int(ky * scale_y)
-                    if conf > 0.5:
-                        cv2.circle(img, (kx, ky), 3, (255, 0, 0), -1)
-
-                # Drawing connections between keypoints
-                for sk in skeleton:
-                    pos1 = (kpt[(sk[0] - 1) * 3], kpt[(sk[0] - 1) * 3 + 1])
-                    pos1 = (int(pos1[0] * scale_x), int(pos1[1] * scale_y))
-
-                    pos2 = (kpt[(sk[1] - 1) * 3], kpt[(sk[1] - 1) * 3 + 1])
-                    pos2 = (int(pos2[0] * scale_x), int(pos2[1] * scale_y))
-
-                    conf1 = kpt[(sk[0] - 1) * 3 + 2]
-                    conf2 = kpt[(sk[1] - 1) * 3 + 2]
-                    if conf1 > 0.5 and conf2 > 0.5:
-                        cv2.line(img, pos1, pos2, (255, 0, 0), 1)
-
-
-        return img
+                norfair_detections.append(
+                    Detection(
+                        points=bbox, scores=scores, label=int(b[4])
+                    )
+                )
+        return norfair_detections

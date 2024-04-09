@@ -270,14 +270,15 @@ class SubFlow:
 
             self.mosaic_info.append([self.x_pos, self.y_pos, self.width, self.height])
             self.sensor_width = max(self.sensor_width, self.width)
+            self.sensor_width = 1280
             self.sensor_height = max(self.sensor_height, self.height)
 
-            if self.input.width < self.width or self.input.height < self.height:
-                print(
-                    "[ERROR] Flow output resolution can not be greater than "
-                    + "input resolution"
-                )
-                sys.exit()
+            # if self.input.width < self.width or self.input.height < self.height:
+            #     print(
+            #         "[ERROR] Flow output resolution can not be greater than "
+            #         + "input resolution"
+            #     )
+            #     sys.exit()
             self.disp_id = self.output.get_disp_id(self, input.fps)
 
         if self.model.task_type == "classification":
